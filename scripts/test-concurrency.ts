@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { prisma } from '../src/lib/prisma';
 import { ReservationService, ReservationError } from '../src/services/reservationService';
 import { ReservationStatus } from '@prisma/client';
