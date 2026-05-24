@@ -1,6 +1,5 @@
-import { PrismaClient, ReservationStatus } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../src/lib/prisma';
+import { ReservationStatus } from '@prisma/client';
 
 async function main() {
   console.log('Starting database seeding...');
