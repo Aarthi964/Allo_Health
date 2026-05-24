@@ -17,6 +17,13 @@ export interface ReservationResult {
   expiresAt: Date;
 }
 
+// Config for interactive transactions (max wait to get connection, max timeout for execution)
+// These values are extended to handle remote network roundtrips and locking queues gracefully.
+const TX_CONFIG = {
+  maxWait: 15000, // 15 seconds wait time to acquire connection / lock queue
+  timeout: 20000, // 20 seconds execution timeout
+};
+
 export class ReservationService {
   /**
    * Temporary reserve stock for a product in a warehouse.
@@ -134,21 +141,24 @@ export class ReservationService {
         }
 
         return result;
-      });
-    } catch (error) {
-      // If the error is a ReservationError, write it to idempotency record for caching if needed
-      // (or let it bubble so client can retry. Usually we cache success, but let's cache 409 conflict too)
-      if (error instanceof ReservationError && idempotencyKey) {
-        try {
-          await prisma.idempotencyRecord.create({
-            data: {
-              key: idempotencyKey,
-              statusCode: error.statusCode,
-              responseBody: error.message,
-            },
-          });
-        } catch {
-          // Ignore key conflicts if another process wrote it
+      }, TX_CONFIG);
+    } catch (error: any) {
+      // Step 8: Handle concurrent idempotency writes (Prisma unique constraint code: P2002)
+      // If two concurrent requests try to insert the same key, the slower one rolls back.
+      // We catch this collision, query the database, and return the cached response.
+      if (
+        idempotencyKey &&
+        (error.code === 'P2002' || error.message?.includes('Unique constraint failed') || error.message?.includes('duplicate key'))
+      ) {
+        const existingRecord = await prisma.idempotencyRecord.findUnique({
+          where: { key: idempotencyKey },
+        });
+        if (existingRecord) {
+          if (existingRecord.statusCode === 201) {
+            return JSON.parse(existingRecord.responseBody) as ReservationResult;
+          } else {
+            throw new ReservationError(existingRecord.statusCode, existingRecord.responseBody);
+          }
         }
       }
       throw error;
@@ -237,7 +247,7 @@ export class ReservationService {
         status: updatedReservation.status,
         expiresAt: updatedReservation.expiresAt,
       };
-    });
+    }, TX_CONFIG);
   }
 
   /**
@@ -299,7 +309,7 @@ export class ReservationService {
         status: updatedReservation.status,
         expiresAt: updatedReservation.expiresAt,
       };
-    });
+    }, TX_CONFIG);
   }
 
   /**
@@ -356,7 +366,7 @@ export class ReservationService {
             where: { id: reservation.id },
             data: { status: ReservationStatus.RELEASED },
           });
-        });
+        }, TX_CONFIG);
 
         processed++;
       } catch (err) {
